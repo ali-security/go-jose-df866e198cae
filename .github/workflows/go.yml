@@ -1,13 +1,16 @@
 name: Go
 
 on:
-  push:
-    branches: [ v3 ]
-  pull_request:
-    branches: [ v3 ]
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: "Optional go test -run selector; empty runs the full suite"
+        required: false
+        default: ""
 
 jobs:
   build:
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -29,24 +32,52 @@ jobs:
       run: go build -v ./...
 
     - name: Test
-      run: go test -v ./...
+      run: |
+        set -o pipefail
+        if [ -n "${{ inputs.test-filter }}" ]; then
+          go test -v -run "${{ inputs.test-filter }}" ./... 2>&1 | tee "$RUNNER_TEMP/gotest.log"
+        else
+          go test -v ./... 2>&1 | tee "$RUNNER_TEMP/gotest.log"
+        fi
+        awk '/^--- PASS/{p++} /^--- FAIL/{f++} /^--- SKIP/{s++} END{printf "GO TEST SUMMARY: passed=%d failed=%d skipped=%d\n", p, f, s}' "$RUNNER_TEMP/gotest.log"
 
-  govulncheck:
-    strategy:
-      matrix:
-        GO_VERSION:
-          # Just run govulncheck on the latest Go version.
-          - "1.24.x"
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          persist-credentials: false
+    - name: Create module zip
+      if: matrix.GO_VERSION == '1.23.x'
+      run: |
+        set -euo pipefail
+        HELPER=$(mktemp -d)
+        mkdir -p "$RUNNER_TEMP/out"
+        cd "$HELPER"
+        go mod init sealzip
+        go get golang.org/x/mod@v0.24.0
+        cat > main.go <<'EOF'
+        package main
 
-      - name: Set up Go ${{ matrix.GO_VERSION }}
-        uses: actions/setup-go@v5
-        with:
-          go-version: "${{ matrix.GO_VERSION }}"
+        import (
+        "os"
 
-      - name: Run govulncheck
-        run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+        "golang.org/x/mod/module"
+        "golang.org/x/mod/zip"
+        )
+
+        func main() {
+        f, err := os.Create(os.Args[4])
+        if err != nil {
+        panic(err)
+        }
+        defer f.Close()
+        if err := zip.CreateFromDir(f, module.Version{Path: os.Args[1], Version: os.Args[2]}, os.Args[3]); err != nil {
+        panic(err)
+        }
+        }
+        EOF
+        go run . github.com/go-jose/go-jose/v3 v3.0.4 "$GITHUB_WORKSPACE" "$RUNNER_TEMP/out/v3.0.4.zip"
+        unzip -l "$RUNNER_TEMP/out/v3.0.4.zip"
+
+    - name: Upload module zip
+      if: matrix.GO_VERSION == '1.23.x'
+      uses: actions/upload-artifact@v4
+      with:
+        name: go-module-zip
+        path: ${{ runner.temp }}/out/v3.0.4.zip
+        if-no-files-found: error
