@@ -1328,6 +1328,205 @@ func TestUnmarshalUnexported(t *testing.T) {
 	}
 }
 
+type unexportedWithMethods struct{}
+
+func (unexportedWithMethods) F() {}
+
+// Test that unmarshaling into embedded unexported fields does not panic.
+// Issues 21357 and 24152.
+func TestUnmarshalEmbeddedUnexported(t *testing.T) {
+	type (
+		embed1 struct{ Q int }
+		embed2 struct{ Q int }
+		embed3 struct {
+			Q int64 `json:",string"`
+		}
+		embed4 struct {
+			*embed1
+		}
+		embedInt   int
+		embedIface interface{}
+		S1         struct {
+			*embed1
+			R int
+		}
+		S2 struct {
+			*embed1
+			Q int
+		}
+		S3 struct {
+			embed1
+			R int
+		}
+		S4 struct {
+			*embed1
+			embed2
+		}
+		S5 struct {
+			*embed3
+			R int
+		}
+		S6 struct {
+			embed1 `json:"embed1"`
+		}
+		S7 struct {
+			embed1 `json:"embed1"`
+			embed2
+		}
+		S8 struct {
+			embed1 `json:"embed1"`
+			embed2 `json:"embed2"`
+			Q      int
+		}
+		S9 struct {
+			unexportedWithMethods `json:"embed"`
+		}
+		S10 struct {
+			*embed1 `json:"embed1"`
+			R       int
+		}
+		S11 struct {
+			*unexportedWithMethods `json:"embed"`
+		}
+		S12 struct {
+			embedInt
+			R int
+		}
+		S13 struct {
+			*embedInt
+			R int
+		}
+		S14 struct {
+			embedIface
+			R int
+		}
+		S15 struct {
+			embed4
+			R int
+		}
+	)
+
+	tests := []struct {
+		in  string
+		ptr interface{}
+		out interface{}
+		err string
+	}{{
+		// Error since we cannot set S1.embed1, but still able to set S1.R.
+		in:  `{"R":2,"Q":1}`,
+		ptr: new(S1),
+		out: &S1{R: 2},
+		err: "json: cannot set embedded pointer to unexported struct: json.embed1",
+	}, {
+		// The top level Q field takes precedence.
+		in:  `{"Q":1}`,
+		ptr: new(S2),
+		out: &S2{Q: 1},
+	}, {
+		// No issue with non-pointer variant.
+		in:  `{"R":2,"Q":1}`,
+		ptr: new(S3),
+		out: &S3{embed1: embed1{Q: 1}, R: 2},
+	}, {
+		// No error since both embedded structs have field Q, which annihilate each other.
+		// Thus, no ambiguity.
+		in:  `{"R":2}`,
+		ptr: new(S4),
+		out: new(S4),
+	}, {
+		// Error since we cannot set S5.embed3, but still able to set S5.R.
+		in:  `{"R":2,"Q":1}`,
+		ptr: new(S5),
+		out: &S5{R: 2},
+		err: "json: cannot set embedded pointer to unexported struct: json.embed3",
+	}, {
+		// A tagged embedded unexported struct is still populated.
+		in:  `{"embed1": {"Q": 1}}`,
+		ptr: new(S6),
+		out: &S6{embed1{1}},
+	}, {
+		// Forwarded fields can still be set in the presence of a name conflict.
+		in:  `{"embed1": {"Q": 1}, "Q": 2}`,
+		ptr: new(S7),
+		out: &S7{embed1{1}, embed2{2}},
+	}, {
+		// Similar to the S7 case.
+		in:  `{"embed1": {"Q": 1}, "embed2": {"Q": 2}, "Q": 3}`,
+		ptr: new(S8),
+		out: &S8{embed1{1}, embed2{2}, 3},
+	}, {
+		// Issue 24152, ensure decodeState.indirect does not panic.
+		in:  `{"embed": {}}`,
+		ptr: new(S9),
+		out: new(S9),
+	}, {
+		// Error since we cannot set a tagged nil S10.embed1, but still able to set S10.R.
+		in:  `{"R":2,"embed1":{"Q":1}}`,
+		ptr: new(S10),
+		out: &S10{R: 2},
+		err: "json: cannot set embedded pointer to unexported struct: json.embed1",
+	}, {
+		// A tagged non-nil S10.embed1 is still populated.
+		in:  `{"R":2,"embed1":{"Q":1}}`,
+		ptr: &S10{embed1: &embed1{}},
+		out: &S10{embed1: &embed1{Q: 1}, R: 2},
+	}, {
+		// Error since we cannot set a tagged nil S11.unexportedWithMethods.
+		in:  `{"embed": {}}`,
+		ptr: new(S11),
+		out: new(S11),
+		err: "json: cannot set embedded pointer to unexported struct: json.unexportedWithMethods",
+	}, {
+		// Ensure decodeState.indirect does not panic on a tagged non-nil pointer.
+		in:  `{"embed": {}}`,
+		ptr: &S11{&unexportedWithMethods{}},
+		out: &S11{&unexportedWithMethods{}},
+	}, {
+		// Embedded fields of unexported non-struct types are ignored.
+		in:  `{"R":2,"embedInt":1}`,
+		ptr: new(S12),
+		out: &S12{R: 2},
+	}, {
+		// Embedded pointers to unexported non-struct types are ignored.
+		in:  `{"R":2,"embedInt":1}`,
+		ptr: new(S13),
+		out: &S13{R: 2},
+	}, {
+		// Embedded fields of unexported interface types are ignored.
+		in:  `{"R":2,"embedIface":1}`,
+		ptr: new(S14),
+		out: &S14{R: 2},
+	}, {
+		// Error since we cannot set S15.embed4.embed1, but still able to set S15.R.
+		in:  `{"R":2,"Q":1}`,
+		ptr: new(S15),
+		out: &S15{R: 2},
+		err: "json: cannot set embedded pointer to unexported struct: json.embed1",
+	}}
+
+	for i, tt := range tests {
+		var err error
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("#%d: Unmarshal(%s, %T) panicked: %v", i, tt.in, tt.ptr, r)
+				}
+			}()
+			err = Unmarshal([]byte(tt.in), tt.ptr)
+		}()
+		if tt.err == "" {
+			if err != nil {
+				t.Errorf("#%d: Unmarshal(%s, %T): unexpected error: %v", i, tt.in, tt.ptr, err)
+			}
+		} else if err == nil || err.Error() != tt.err {
+			t.Errorf("#%d: Unmarshal(%s, %T): got error %v, want %q", i, tt.in, tt.ptr, err, tt.err)
+		}
+		if !reflect.DeepEqual(tt.ptr, tt.out) {
+			t.Errorf("#%d: Unmarshal(%s): got %+v, want %+v", i, tt.in, tt.ptr, tt.out)
+		}
+	}
+}
+
 // Time3339 is a time.Time which encodes to and from JSON
 // as an RFC 3339 time in UTC.
 type Time3339 time.Time

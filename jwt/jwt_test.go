@@ -68,6 +68,39 @@ func TestGetClaimsWithoutVerification(t *testing.T) {
 	}
 }
 
+// A claim matching a field promoted from an embedded pointer to an
+// unexported struct must return an error rather than panic.
+func TestClaimsEmbeddedUnexported(t *testing.T) {
+	type embeddingClaims struct {
+		*customClaims
+		Subject string `json:"sub"`
+	}
+	const wantErr = "json: cannot set embedded pointer to unexported struct: jwt.customClaims"
+
+	tok, err := ParseSigned(hmacSignedToken)
+	if assert.NoError(t, err, "Error parsing signed token.") {
+		c := &embeddingClaims{}
+		assert.NotPanics(t, func() {
+			err = tok.UnsafeClaimsWithoutVerification(c)
+		})
+		assert.EqualError(t, err, wantErr)
+		assert.Equal(t, "subject", c.Subject)
+
+		c = &embeddingClaims{}
+		assert.NotPanics(t, func() {
+			err = tok.Claims(sharedKey, c)
+		})
+		assert.EqualError(t, err, wantErr)
+		assert.Equal(t, "subject", c.Subject)
+
+		c = &embeddingClaims{customClaims: &customClaims{}}
+		if assert.NoError(t, tok.Claims(sharedKey, c)) {
+			assert.Equal(t, "subject", c.Subject)
+			assert.Equal(t, []string{"s1", "s2"}, c.Scopes)
+		}
+	}
+}
+
 func TestDecodeTokenWithJWKS(t *testing.T) {
 	jwks := &jose.JSONWebKeySet{
 		Keys: []jose.JSONWebKey{

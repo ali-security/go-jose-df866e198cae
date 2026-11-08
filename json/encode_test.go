@@ -269,6 +269,30 @@ func TestAnonymousNonstruct(t *testing.T) {
 	}
 }
 
+// Embedded fields of unexported non-struct types are ignored, while the
+// exported fields of embedded unexported struct types are still promoted.
+// Issue 21357.
+func TestMarshalEmbeddedUnexported(t *testing.T) {
+	type (
+		embedInt    int
+		embedStruct struct{ X int }
+	)
+	v := struct {
+		embedInt
+		*embedStruct
+		R int
+	}{5, &embedStruct{X: 1}, 2}
+	const want = `{"X":1,"R":2}`
+
+	b, err := Marshal(v)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if got := string(b); got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
 type BugA struct {
 	S string
 }
