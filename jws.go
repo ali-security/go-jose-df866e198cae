@@ -26,6 +26,12 @@ import (
 	"github.com/go-jose/go-jose/v3/json"
 )
 
+// MaxSignatures is the maximum number of signatures in a JWS at parse time.
+// Higher values mean more potential work done across untrusted input.
+//
+// If modifying MaxSignatures, do it before any parsing occurs.
+var MaxSignatures = 32
+
 // rawJSONWebSignature represents a raw JWS JSON object. Used for parsing/serializing.
 type rawJSONWebSignature struct {
 	Payload    *byteBuffer        `json:"payload,omitempty"`
@@ -76,6 +82,8 @@ type Signature struct {
 }
 
 // ParseSigned parses a signed message in compact or JWS JSON Serialization format.
+// Messages in JWS JSON Serialization with more than MaxSignatures signatures
+// are rejected.
 func ParseSigned(signature string) (*JSONWebSignature, error) {
 	signature = stripWhitespace(signature)
 	if strings.HasPrefix(signature, "{") {
@@ -152,6 +160,9 @@ func parseSignedFull(input string) (*JSONWebSignature, error) {
 func (parsed *rawJSONWebSignature) sanitized() (*JSONWebSignature, error) {
 	if parsed.Payload == nil {
 		return nil, fmt.Errorf("go-jose/go-jose: missing payload in JWS message")
+	}
+	if len(parsed.Signatures) > MaxSignatures {
+		return nil, fmt.Errorf("go-jose/go-jose: too many signatures in JWS; maximum is %d", MaxSignatures)
 	}
 
 	obj := &JSONWebSignature{

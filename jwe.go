@@ -24,6 +24,12 @@ import (
 	"github.com/go-jose/go-jose/v3/json"
 )
 
+// MaxRecipients is the maximum number of recipients of a JWE at parse time.
+// Higher values mean more potential work done across untrusted input.
+//
+// If modifying MaxRecipients, do it before any parsing occurs.
+var MaxRecipients = 32
+
 // rawJSONWebEncryption represents a raw JWE JSON object. Used for parsing/serializing.
 type rawJSONWebEncryption struct {
 	Protected    *byteBuffer        `json:"protected,omitempty"`
@@ -105,6 +111,8 @@ func (obj JSONWebEncryption) computeAuthData() []byte {
 }
 
 // ParseEncrypted parses an encrypted message in compact or JWE JSON Serialization format.
+// Messages in JWE JSON Serialization with more than MaxRecipients recipients
+// are rejected.
 func ParseEncrypted(input string) (*JSONWebEncryption, error) {
 	input = stripWhitespace(input)
 	if strings.HasPrefix(input, "{") {
@@ -127,6 +135,10 @@ func parseEncryptedFull(input string) (*JSONWebEncryption, error) {
 
 // sanitized produces a cleaned-up JWE object from the raw JSON.
 func (parsed *rawJSONWebEncryption) sanitized() (*JSONWebEncryption, error) {
+	if len(parsed.Recipients) > MaxRecipients {
+		return nil, fmt.Errorf("go-jose/go-jose: too many recipients in JWE; maximum is %d", MaxRecipients)
+	}
+
 	obj := &JSONWebEncryption{
 		original:    parsed,
 		unprotected: parsed.Unprotected,
